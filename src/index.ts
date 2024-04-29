@@ -7,6 +7,10 @@ export const CSVFormat = {
   metadata: new Str({ example: "author: ...\ntitle: ..." }),
 };
 
+export const QueryFormat = {
+  query: new Str({ example: "lorem ipsum dolor..." }),
+};
+
 export const router = OpenAPIRouter({
   docs_url: "/docs",
 });
@@ -49,39 +53,15 @@ export class Insert extends OpenAPIRoute {
     context: any,
     data: Record<string, any>
   ): Promise<Response> {
-    /*
-	async index(episodes: Episode[]) {
-  // Get embeddings for episodes
-  const { data: embeddings } = await this.ai.run(
-    "@cf/baai/bge-base-en-v1.5",
-    {
-      text: episodes.map((episode) => episode.description),
-    }
-  );
-
-  // Vectorize uses vector objects. Combine the episodes list with the embeddings
-  const vectors = episodes.map((episode, i) => ({
-    id: episode.id,
-    values: embeddings[i],
-    metadata: {
-      title: episode.title,
-      published: episode.published,
-      permalink: episode.permalink,
-    },
-  }));
-
-  // Upsert the embeddings into the database
-  await this.room.context.vectorize.searchIndex.upsert(vectors);
-}
-*/
-
     // Retrieve the validated request body
     const csvData = data.body;
+    const userID = data.user_id;
+    if (!userID) {
+      return Response.json({ success: false, error: "User ID is required" });
+    }
     // map out all the data from the csv
     const dataToInput = csvData.map((row) => row.data);
-	const metadata = csvData.map((row) => row.metadata);
-
-    console.log(dataToInput);
+    const metadata = csvData.map((row) => row.metadata);
 
     const modelResp: EmbeddingResponse = await env.AI.run(
       "@cf/baai/bge-base-en-v1.5",
@@ -90,23 +70,35 @@ export class Insert extends OpenAPIRoute {
       }
     );
 
-	// Convert the vector embeddings into a format Vectorize can accept.
-	// Each vector needs an ID, a value (the vector) and optional metadata.
-	// In a real application, your ID would be bound to the ID of the source
-	const vectors: VectorizeVector[] = [];
-	let id = uuidv4();
-	modelResp.data.forEach((vector, idx) => {
-		vectors.push({ id: `${id}`, values: vector, metadata: { text: dataToInput[idx], etc: metadata[idx], createdAt: new Date().toISOString() } });
-	});
+    // Convert the vector embeddings into a format Vectorize can accept.
+    // Each vector needs an ID, a value (the vector) and optional metadata.
+    // In a real application, your ID would be bound to the ID of the source
+    const vectors: VectorizeVector[] = [];
+    let id = uuidv4();
+    modelResp.data.forEach((vector, idx) => {
+      vectors.push({
+        id: `${id}`,
+        values: vector,
+        metadata: {
+          text: dataToInput[idx],
+          metadata: metadata[idx],
+		  namespace: userID,
+          createdAt: new Date().toISOString(),
+        },
+      });
+    });
 
-	let inserted = await env.VECTORIZE_INDEX.upsert(vectors);
-	console.log(inserted);
+    let inserted = await env.VECTORIZE_INDEX.upsert(vectors);
 
     try {
       // csv headers: data, metadata
       const createdAt = new Date().toISOString();
 
-      return Response.json({ success: true, namespace: uuidv4(), inserted: inserted });
+      return Response.json({
+        success: true,
+        namespace: uuidv4(),
+        inserted: inserted,
+      });
     } catch (err) {
       return Response.json({ success: false, error: err.message });
     }
@@ -117,6 +109,7 @@ export class Query extends OpenAPIRoute {
   static schema: OpenAPIRouteSchema = {
     tags: ["Query"],
     summary: "Query",
+    requestBody: QueryFormat,
     responses: {
       "200": {
         description: "{ success: true, namespace: string }",
@@ -137,7 +130,7 @@ export class Query extends OpenAPIRoute {
     data: Record<string, any>
   ): Promise<Response> {
     try {
-      let userQuery = "iron man";
+      let userQuery = data.body.query;
       const queryVector: EmbeddingResponse = await env.AI.run(
         "@cf/baai/bge-base-en-v1.5",
         {
@@ -145,14 +138,14 @@ export class Query extends OpenAPIRoute {
         }
       );
 
-	  // 37db67ab-4ec2-4f72-bffc-193e758465a9
+      // 37db67ab-4ec2-4f72-bffc-193e758465a9
 
       // console.log(queryVector);
       const cv = await env.VECTORIZE_INDEX;
       console.log(cv.query);
 
       let matches = await env.VECTORIZE_INDEX.query(queryVector.data[0], {
-        topK: 1,
+        topK: 3,
         returnMetadata: true,
       });
 
@@ -170,7 +163,10 @@ export class Query extends OpenAPIRoute {
 }
 
 router.post("/api/insert/", Insert);
-router.get("/api/query/", Query);
+router.post("/api/query/", Query);
+router.get("/api/generate/", () =>
+  Response.json({ success: true, namespace: uuidv4() })
+);
 
 // 404 for everything else
 router.all("*", () =>
